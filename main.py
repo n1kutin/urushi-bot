@@ -1,4 +1,6 @@
 import os
+import re
+import random
 import logging
 import sqlite3
 import asyncio
@@ -144,8 +146,7 @@ async def append_history(chat_id: str, entries: list) -> None:
 # ====== ПЕР-ЧАТ ЛОКИ ======
 # Гарантируют, что для одного chat_id последовательность
 # "прочитать историю -> сгенерировать ответ -> записать историю" не прервётся
-# параллельным сообщением из того же чата. Разные чаты обрабатываются независимо
-# друг от друга (не блокируют друг друга).
+# параллельным сообщением из того же чата. Разные чаты не блокируют друг друга.
 _chat_locks: dict = {}
 _locks_guard = asyncio.Lock()
 
@@ -191,6 +192,83 @@ async def get_business_owner_id(context: ContextTypes.DEFAULT_TYPE, business_con
         return None
 
 
+# ====== ЧЕЛОВЕКОПОДОБНАЯ ОТПРАВКА ОТВЕТА ======
+def split_into_chunks(text: str) -> list:
+    """Разбивает текст на 2-3 части по границам предложений, имитируя
+    серию сообщений, которые человек пишет одно за другим."""
+    sentences = re.split(r'(?<=[.!?…])\s+', text.strip())
+    sentences = [s for s in sentences if s]
+
+    if len(sentences) < 2:
+        return [text]
+
+    parts_count = min(random.choice([2, 2, 3]), len(sentences))
+
+    chunks = []
+    avg = len(sentences) / parts_count
+    idx = 0
+    for i in range(parts_count):
+        end = round(avg * (i + 1))
+        part = " ".join(sentences[idx:end]).strip()
+        if part:
+            chunks.append(part)
+        idx = end
+
+    return chunks if chunks else [text]
+
+
+def typing_delay(text: str) -> float:
+    """Задержка перед отправкой части сообщения, похожая на время набора текста."""
+    base = random.uniform(0.8, 2.0)
+    per_char = len(text) * random.uniform(0.02, 0.045)
+    return min(base + per_char, 6.0)
+
+
+async def send_human_like(
+    context: ContextTypes.DEFAULT_TYPE,
+    business_connection_id: str,
+    chat_id: int,
+    text: str,
+) -> None:
+    initial_delay = random.uniform(1.5, 4.5)
+    try:
+        await context.bot.send_chat_action(
+            business_connection_id=business_connection_id,
+            chat_id=chat_id,
+            action="typing",
+        )
+    except TelegramError:
+        pass
+    await asyncio.sleep(initial_delay)
+
+    if len(text) > 60 and random.random() < 0.35:
+        chunks = split_into_chunks(text)
+    else:
+        chunks = [text]
+
+    for i, chunk in enumerate(chunks):
+        try:
+            await context.bot.send_message(
+                business_connection_id=business_connection_id,
+                chat_id=chat_id,
+                text=chunk,
+            )
+        except TelegramError as e:
+            logger.error(f"Не удалось отправить часть сообщения в чат {chat_id}: {e}")
+            break
+
+        if i < len(chunks) - 1:
+            try:
+                await context.bot.send_chat_action(
+                    business_connection_id=business_connection_id,
+                    chat_id=chat_id,
+                    action="typing",
+                )
+            except TelegramError:
+                pass
+            await asyncio.sleep(typing_delay(chunks[i + 1]))
+
+
 # ====== ОБРАБОТЧИК BUSINESS-СООБЩЕНИЙ ======
 async def handle_business_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     msg = update.business_message
@@ -223,16 +301,9 @@ async def handle_business_message(update: Update, context: ContextTypes.DEFAULT_
         # Сохраняем сообщение пользователя и ответ бота в историю
         await append_history(chat_id, [("user", text), ("bot", reply_text)])
 
-    # Отправляем ответ от имени владельца аккаунта
-    try:
-        await context.bot.send_message(
-            business_connection_id=business_connection_id,
-            chat_id=msg.chat.id,
-            text=reply_text,
-        )
-        logger.info(f"Ответил в чат {chat_id}")
-    except TelegramError as e:
-        logger.error(f"Не удалось отправить сообщение в чат {chat_id}: {e}")
+    # Отправляем ответ от имени владельца аккаунта — с задержкой и иногда лесенкой
+    await send_human_like(context, business_connection_id, msg.chat.id, reply_text)
+    logger.info(f"Ответил в чат {chat_id}")
 
 
 # ====== ГЛАВНОЕ МЕНЮ ======
