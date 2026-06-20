@@ -74,14 +74,37 @@ def generate_reply(chat_log: list, new_message: str) -> str:
     return response.choices[0].message.content.strip()
 
 
+# Кэш: business_connection_id -> id владельца аккаунта
+business_owner_cache: dict = {}
+
+
+async def get_business_owner_id(context: ContextTypes.DEFAULT_TYPE, business_connection_id: str) -> int | None:
+    if business_connection_id in business_owner_cache:
+        return business_owner_cache[business_connection_id]
+    try:
+        connection = await context.bot.get_business_connection(business_connection_id)
+        owner_id = connection.user.id
+        business_owner_cache[business_connection_id] = owner_id
+        return owner_id
+    except Exception as e:
+        logger.error(f"Не удалось получить владельца business-подключения: {e}")
+        return None
+
+
 # ====== ОБРАБОТЧИК BUSINESS-СООБЩЕНИЙ ======
 async def handle_business_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     msg = update.business_message
     if msg is None or not msg.text:
         return
 
-    chat_id = str(msg.chat.id)
     business_connection_id = msg.business_connection_id
+
+    # Игнорируем сообщения, которые отправил сам владелец аккаунта (т.е. ты сам)
+    owner_id = await get_business_owner_id(context, business_connection_id)
+    if owner_id is not None and msg.from_user and msg.from_user.id == owner_id:
+        return
+
+    chat_id = str(msg.chat.id)
     text = msg.text
 
     history = load_history()
