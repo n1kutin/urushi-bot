@@ -1,5 +1,6 @@
 import os
 import re
+import time
 import random
 import logging
 import sqlite3
@@ -8,6 +9,7 @@ from pathlib import Path
 
 from groq import Groq
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice
+from telegram.constants import ParseMode
 from telegram.ext import (
     Application,
     MessageHandler,
@@ -23,6 +25,7 @@ from telegram.error import TelegramError
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "ВСТАВЬ_СЮДА_ТОКЕН_БОТА")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "ВСТАВЬ_СЮДА_GROQ_КЛЮЧ")
 GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+OWNER_ID = int(os.getenv("OWNER_ID", "0"))  # Telegram user_id владельца аккаунта
 
 DISCLAIMER_TEXT = (
     "(автоответ) привет, я автоответчик, владелец сейчас не может ответить сам, "
@@ -215,6 +218,66 @@ async def get_business_owner_id(context: ContextTypes.DEFAULT_TYPE, business_con
         return None
 
 
+# ====== !PING — ПРОВЕРКА ПИНГА (ТОЛЬКО ДЛЯ ВЛАДЕЛЬЦА) ======
+async def measure_telegram_ping(context: ContextTypes.DEFAULT_TYPE) -> float:
+    start = time.monotonic()
+    await context.bot.get_me()
+    return (time.monotonic() - start) * 1000  # в миллисекундах
+
+
+def measure_db_ping() -> float:
+    start = time.monotonic()
+    conn = _get_connection()
+    try:
+        conn.execute("SELECT 1").fetchone()
+    finally:
+        conn.close()
+    return (time.monotonic() - start) * 1000
+
+
+def build_ping_message(tg_ms: float, db_ms: float) -> str:
+    def status_icon(ms: float, good: float, ok: float) -> str:
+        if ms <= good:
+            return "🟢"
+        if ms <= ok:
+            return "🟡"
+        return "🔴"
+
+    tg_icon = status_icon(tg_ms, 150, 400)
+    db_icon = status_icon(db_ms, 10, 50)
+
+    return (
+        "<b>📡 Статус сервера</b>\n\n"
+        f"{tg_icon} <b>Telegram API:</b> <code>{tg_ms:.1f} ms</code>\n"
+        f"{db_icon} <b>SQLite:</b> <code>{db_ms:.1f} ms</code>\n"
+    )
+
+
+async def handle_ping_command(
+    context: ContextTypes.DEFAULT_TYPE,
+    business_connection_id: str | None,
+    chat_id: int,
+) -> None:
+    try:
+        tg_ms = await measure_telegram_ping(context)
+        db_ms = await asyncio.to_thread(measure_db_ping)
+        text = build_ping_message(tg_ms, db_ms)
+    except Exception as e:
+        logger.error(f"Не удалось измерить пинг: {e}")
+        text = "⚠️ Не получилось измерить пинг."
+
+    try:
+        await context.bot.send_message(
+            business_connection_id=business_connection_id,
+            chat_id=chat_id,
+            text=text,
+            parse_mode=ParseMode.HTML,
+        )
+    except TelegramError as e:
+        logger.error(f"Не удалось отправить пинг в чат {chat_id}: {e}")
+
+
+# ====== ОТПРАВКА ОТВЕТА (С ЛЕСЕНКОЙ, БЕЗ ЗАДЕРЖКИ) ======
 def split_into_chunks(text: str) -> list:
     sentences = re.split(r'(?<=[.!?…])\s+', text.strip())
     sentences = [s for s in sentences if s]
@@ -260,13 +323,21 @@ async def send_reply(
             break
 
 
+# ====== ОБРАБОТЧИК BUSINESS-СООБЩЕНИЙ ======
 async def handle_business_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     msg = update.business_message
     if msg is None or not msg.text:
         return
 
     business_connection_id = msg.business_connection_id
+    is_owner_message = bool(msg.from_user and msg.from_user.id == OWNER_ID)
 
+    # !ping от владельца работает прямо в business-чате, с кем бы он ни переписывался
+    if is_owner_message and msg.text.strip() == "!ping":
+        await handle_ping_command(context, business_connection_id, msg.chat.id)
+        return
+
+    # Игнорируем остальные сообщения, которые отправил сам владелец аккаунта
     owner_id = await get_business_owner_id(context, business_connection_id)
     if owner_id is not None and msg.from_user and msg.from_user.id == owner_id:
         return
@@ -305,6 +376,7 @@ async def handle_business_message(update: Update, context: ContextTypes.DEFAULT_
     logger.info(f"Ответил в чат {chat_id}")
 
 
+# ====== ГЛАВНОЕ МЕНЮ ======
 def build_main_menu() -> InlineKeyboardMarkup:
     keyboard = [
         [InlineKeyboardButton("О боте", callback_data="about")],
@@ -324,12 +396,21 @@ def build_donate_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(keyboard)
 
 
+# ====== ОБРАБОТЧИК ОБЫЧНЫХ СООБЩЕНИЙ (ПРЯМО БОТУ, НЕ ЧЕРЕЗ BUSINESS) ======
 async def handle_direct_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     msg = update.message
     if msg is None or msg.from_user is None or not msg.text:
         return
 
-    text = msg.text.strip().lower()
+    raw_text = msg.text.strip()
+    text = raw_text.lower()
+
+    # !ping доступен только владельцу аккаунта
+    if raw_text == "!ping":
+        if OWNER_ID and msg.from_user.id == OWNER_ID:
+            await handle_ping_command(context, None, msg.chat.id)
+        # если написал не владелец — молча игнорируем
+        return
 
     if text.startswith("/start"):
         await context.bot.send_message(
@@ -344,6 +425,7 @@ async def handle_direct_message(update: Update, context: ContextTypes.DEFAULT_TY
         )
 
 
+# ====== ОБРАБОТКА НАЖАТИЙ НА КНОПКИ МЕНЮ ======
 STAR_AMOUNTS = {
     "donate_25": 25,
     "donate_50": 50,
@@ -387,6 +469,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         )
 
 
+# ====== ПОДТВЕРЖДЕНИЕ ОПЛАТЫ ЗВЁЗДАМИ ======
 async def handle_pre_checkout(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.pre_checkout_query
     await query.answer(ok=True)
