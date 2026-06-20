@@ -24,9 +24,15 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "ВСТАВЬ_СЮДА_ТО
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "ВСТАВЬ_СЮДА_GROQ_КЛЮЧ")
 GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 
+DISCLAIMER_TEXT = (
+    "(автоответ) привет, я автоответчик, владелец сейчас не может ответить сам, "
+    "но я постараюсь помочь по переписке 🙂"
+)
+
 SYSTEM_PROMPT = (
     "Ты пишешь в личных сообщениях от имени владельца аккаунта, обычному собеседнику (другу/знакомому). "
-    "Твоя задача — отвечать максимально похоже на живого человека в реальной переписке, а не как бот или ассистент.\n\n"
+    "Собеседнику уже известно, что это автоответчик — в начале разговора ему показали дисклеймер об этом. "
+    "Твоя задача — отвечать максимально похоже на живого человека в реальной переписке, а не как формальный бот-ассистент.\n\n"
     "Стиль:\n"
     "- Пиши как обычный человек в чате: естественно, без формальностей и канцелярита.\n"
     "- Используй разговорный сленг и сокращения там, где это естественно ('норм', 'чё', 'ладно', 'ок', 'хз', 'ну' и т.п.), "
@@ -38,16 +44,25 @@ SYSTEM_PROMPT = (
     "Правила по смыслу:\n"
     "1. Отвечай только по смыслу того, что написал собеседник. Не придумывай тему или факты, которых не было в переписке.\n"
     "2. Если сообщение короткое и нейтральное ('привет', 'ку', 'как дела') — отвечай так же коротко и непринуждённо.\n"
-    "3. Если тебя прямо спрашивают, бот ли ты — отрицай естественно, без напряга, как обычный человек среагировал бы на странный вопрос ('хз с чего ты взял', 'не, а ты как думаешь' и т.п.), не объясняя ничего лишнего.\n"
-    "4. Никогда не упоминай, что ты ассистент, ИИ или бот, ни в каком виде.\n"
+    "3. Если тебя прямо спрашивают про то, что ты бот/автоответчик — можешь честно подтвердить это коротко и спокойно, "
+    "без формального тона ('ну да, я автоответчик, написал в начале же' и т.п.), не нужно скрывать или отрицать это.\n"
+    "4. Если собеседник спрашивает что-то странное, непонятное по контексту, или явно адресованное не тебе/не туда "
+    "(например путает с другим человеком, спрашивает про планы/события, о которых в переписке вообще не было речи, "
+    "или вопрос не имеет смысла исходя из истории чата) — не придумывай ответ и не пытайся угадать, о чём речь. "
+    "Вместо этого отмазывайся естественно, как человек, который не понял вопрос или не в курсе: "
+    "'ты о чём вообще', 'не понял о чём ты', 'хз, ты не путаешь меня с кем-то', 'я не в курсе про это, давай потом'. "
+    "Можно добавить что-то от себя в тон ситуации (лёгкое недоумение, шутку, нейтральную фразу), "
+    "но не выдумывай факты или контекст, которых не было.\n"
     "5. НЕ задавай вопрос собеседнику в каждом своём сообщении. Большинство ответов должны быть утверждениями/реакциями "
     "без вопроса на конце. Задавай вопрос только если это реально нужно для разговора, не чаще чем примерно "
     "в одном из 3-4 сообщений.\n"
     "6. Не повторяй и не пересказывай то, что уже написал собеседник.\n"
-    "7. Длина ответа должна зависеть от ситуации, а не быть всегда одинаковой: "
-    "если вопрос или тема требует развёрнутого ответа — отвечай длиннее, нормальными предложениями, "
-    "можно даже несколькими. Не нужно искусственно обрезать мысль до одного слова, если есть что сказать. "
-    "Короткие ответы ('норм', 'ок', 'ку') — только когда это реально уместно по контексту (нейтральные/малозначимые сообщения).\n"
+    "7. Длина ответа должна сильно варьироваться от сообщения к сообщению, а не быть одинаковой. "
+    "Если тема нейтральная и малозначимая — отвечай совсем коротко, иногда буквально одним словом или междометием "
+    "('норм', 'ок', 'ну ку', 'хах', 'жиза'). Если тема требует развёрнутого ответа или собеседник написал длинно — "
+    "отвечай длиннее, несколькими предложениями. Не зацикливайся на одном среднем размере ответа — "
+    "чередуй короткие реакции и более развёрнутые сообщения в зависимости от того, что реально уместно, "
+    "как это естественно происходит у живых людей в переписке.\n"
     "8. Учитывай предыдущие свои сообщения в истории переписки: если видишь, что твой прошлый ответ был неудачным, "
     "странным или не в тему (например собеседник переспросил, не понял, или отреагировал негативно) — "
     "не повторяй тот же подход, скорректируй стиль и смысл в следующем ответе, как это сделал бы человек, "
@@ -101,8 +116,20 @@ def _get_chat_history_sync(chat_id: str, limit: int) -> list:
             (chat_id, limit),
         )
         rows = cur.fetchall()
-        rows.reverse()  # вернуть в хронологическом порядке
+        rows.reverse()
         return [{"role": role, "text": text} for role, text in rows]
+    finally:
+        conn.close()
+
+
+def _chat_has_history_sync(chat_id: str) -> bool:
+    conn = _get_connection()
+    try:
+        cur = conn.execute(
+            "SELECT 1 FROM messages WHERE chat_id = ? LIMIT 1",
+            (chat_id,),
+        )
+        return cur.fetchone() is not None
     finally:
         conn.close()
 
@@ -116,7 +143,6 @@ def _append_messages_sync(chat_id: str, entries: list, max_history: int) -> None
                 "INSERT INTO messages (chat_id, role, text) VALUES (?, ?, ?)",
                 (chat_id, role, text),
             )
-        # обрезаем старые сообщения этого чата сверх лимита
         conn.execute(
             """
             DELETE FROM messages
@@ -134,19 +160,18 @@ def _append_messages_sync(chat_id: str, entries: list, max_history: int) -> None
         conn.close()
 
 
-# ====== АСИНХРОННЫЕ ОБЁРТКИ (не блокируют event loop) ======
 async def get_chat_history(chat_id: str, limit: int = MAX_HISTORY_MESSAGES) -> list:
     return await asyncio.to_thread(_get_chat_history_sync, chat_id, limit)
+
+
+async def chat_has_history(chat_id: str) -> bool:
+    return await asyncio.to_thread(_chat_has_history_sync, chat_id)
 
 
 async def append_history(chat_id: str, entries: list) -> None:
     await asyncio.to_thread(_append_messages_sync, chat_id, entries, MAX_HISTORY_MESSAGES)
 
 
-# ====== ПЕР-ЧАТ ЛОКИ ======
-# Гарантируют, что для одного chat_id последовательность
-# "прочитать историю -> сгенерировать ответ -> записать историю" не прервётся
-# параллельным сообщением из того же чата. Разные чаты не блокируют друг друга.
 _chat_locks: dict = {}
 _locks_guard = asyncio.Lock()
 
@@ -158,7 +183,6 @@ async def get_chat_lock(chat_id: str) -> asyncio.Lock:
         return _chat_locks[chat_id]
 
 
-# ====== ГЕНЕРАЦИЯ ОТВЕТА ЧЕРЕЗ GROQ ======
 def generate_reply(chat_log: list, new_message: str) -> str:
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
     for m in chat_log:
@@ -175,7 +199,6 @@ def generate_reply(chat_log: list, new_message: str) -> str:
     return response.choices[0].message.content.strip()
 
 
-# Кэш: business_connection_id -> id владельца аккаунта
 business_owner_cache: dict = {}
 
 
@@ -192,10 +215,7 @@ async def get_business_owner_id(context: ContextTypes.DEFAULT_TYPE, business_con
         return None
 
 
-# ====== ОТПРАВКА ОТВЕТА (С ЛЕСЕНКОЙ, НО БЕЗ ЗАДЕРЖКИ) ======
 def split_into_chunks(text: str) -> list:
-    """Разбивает текст на 2-3 части по границам предложений, имитируя
-    серию сообщений, которые человек пишет одно за другим."""
     sentences = re.split(r'(?<=[.!?…])\s+', text.strip())
     sentences = [s for s in sentences if s]
 
@@ -240,7 +260,6 @@ async def send_reply(
             break
 
 
-# ====== ОБРАБОТЧИК BUSINESS-СООБЩЕНИЙ ======
 async def handle_business_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     msg = update.business_message
     if msg is None or not msg.text:
@@ -248,7 +267,6 @@ async def handle_business_message(update: Update, context: ContextTypes.DEFAULT_
 
     business_connection_id = msg.business_connection_id
 
-    # Игнорируем сообщения, которые отправил сам владелец аккаунта (т.е. ты сам)
     owner_id = await get_business_owner_id(context, business_connection_id)
     if owner_id is not None and msg.from_user and msg.from_user.id == owner_id:
         return
@@ -258,6 +276,18 @@ async def handle_business_message(update: Update, context: ContextTypes.DEFAULT_
 
     lock = await get_chat_lock(chat_id)
     async with lock:
+        is_new_chat = not await chat_has_history(chat_id)
+
+        if is_new_chat:
+            try:
+                await context.bot.send_message(
+                    business_connection_id=business_connection_id,
+                    chat_id=msg.chat.id,
+                    text=DISCLAIMER_TEXT,
+                )
+            except TelegramError as e:
+                logger.error(f"Не удалось отправить дисклеймер в чат {chat_id}: {e}")
+
         chat_log = await get_chat_history(chat_id)
 
         try:
@@ -269,15 +299,12 @@ async def handle_business_message(update: Update, context: ContextTypes.DEFAULT_
         if not reply_text:
             reply_text = "Хорошо, понял."
 
-        # Сохраняем сообщение пользователя и ответ бота в историю
         await append_history(chat_id, [("user", text), ("bot", reply_text)])
 
-    # Отправляем ответ от имени владельца аккаунта (без задержки, иногда лесенкой)
     await send_reply(context, business_connection_id, msg.chat.id, reply_text)
     logger.info(f"Ответил в чат {chat_id}")
 
 
-# ====== ГЛАВНОЕ МЕНЮ ======
 def build_main_menu() -> InlineKeyboardMarkup:
     keyboard = [
         [InlineKeyboardButton("О боте", callback_data="about")],
@@ -297,7 +324,6 @@ def build_donate_menu() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(keyboard)
 
 
-# ====== ОБРАБОТЧИК ОБЫЧНЫХ СООБЩЕНИЙ (ПРЯМО БОТУ, НЕ ЧЕРЕЗ BUSINESS) ======
 async def handle_direct_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     msg = update.message
     if msg is None or msg.from_user is None or not msg.text:
@@ -318,7 +344,6 @@ async def handle_direct_message(update: Update, context: ContextTypes.DEFAULT_TY
         )
 
 
-# ====== ОБРАБОТКА НАЖАТИЙ НА КНОПКИ МЕНЮ ======
 STAR_AMOUNTS = {
     "donate_25": 25,
     "donate_50": 50,
@@ -356,13 +381,12 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             title=f"Донат {amount} звёзд",
             description="Спасибо за поддержку бота Urushi ⭐",
             payload=f"donate_{amount}",
-            provider_token="",  # для Telegram Stars provider_token всегда пустой
+            provider_token="",
             currency="XTR",
             prices=[LabeledPrice(label=f"{amount} звёзд", amount=amount)],
         )
 
 
-# ====== ПОДТВЕРЖДЕНИЕ ОПЛАТЫ ЗВЁЗДАМИ ======
 async def handle_pre_checkout(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     query = update.pre_checkout_query
     await query.answer(ok=True)
@@ -376,17 +400,12 @@ async def handle_successful_payment(update: Update, context: ContextTypes.DEFAUL
 
 
 def main() -> None:
-    init_db()  # создаём таблицу/файл БД, если их ещё нет
+    init_db()
 
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
 
-    # Telegram Business сообщения приходят отдельным типом обновления
     app.add_handler(MessageHandler(filters.UpdateType.BUSINESS_MESSAGE, handle_business_message, block=False))
-
-    # Обычные сообщения, написанные напрямую боту (не через Business)
     app.add_handler(MessageHandler(filters.TEXT & filters.ChatType.PRIVATE, handle_direct_message, block=False))
-
-    # Меню и донаты
     app.add_handler(CallbackQueryHandler(handle_callback_query))
     app.add_handler(PreCheckoutQueryHandler(handle_pre_checkout))
     app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, handle_successful_payment))
